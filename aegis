@@ -1,0 +1,600 @@
+#!/usr/bin/env python3
+def _tw_line(text, delay=0.004):
+    s = str(text)
+    if "\x1b[" in s or "\033[" in s or len(s) > 450:
+        sys.stdout.write(s + "\n")
+        sys.stdout.flush()
+        return
+    for ch in s:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        import time as _t
+        _t.sleep(delay)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+import argparse
+import json
+import random
+import sys
+import time
+from web_ui import serve_web
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from vault import (
+    analyze_pattern,
+    atbash_lab,
+    audit_key_strength,
+    compare_protection_lab,
+    controlled_caesar_lab,
+    decode_layers_lab,
+    detect_vulnerabilities,
+    morse_lab,
+    rot13_lab,
+    tamper_resistance_demo,
+    unwrap_payload,
+    vigenere_lab,
+    weak_hash_lab,
+    wrap_payload,
+    xor_repeating_lab,
+    xor_single_byte_lab,
+)
+
+RESET = "\033[0m"
+BOLD = "\033[1m"
+CYAN = "\033[96m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+MAGENTA = "\033[95m"
+DIM = "\033[2m"
+
+CYBER_BANNER = f"""{GREEN}{BOLD}
+ █████╗ ███████╗ ██████╗ ██╗███████╗      ██████╗ ████████╗
+██╔══██╗██╔════╝██╔════╝ ██║██╔════╝      ██╔══██╗╚══██╔══╝
+███████║█████╗  ██║  ███╗██║███████╗█████╗██████╔╝   ██║
+██╔══██║██╔══╝  ██║   ██║██║╚════██║╚════╝██╔══██╗   ██║
+██║  ██║███████╗╚██████╔╝██║███████║      ██║  ██║   ██║
+╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝╚══════╝      ╚═╝  ╚═╝   ╚═╝
+{RESET}{CYAN}{BOLD}  [ AEGIS-X-v1 // CRYPTO PATTERN & VULNERABILITY LAB ]{RESET}
+{DIM}  Stateless Red Team Utility • Zero Database • Portable CLI{RESET}
+"""
+
+
+def _typewriter(text: str, delay: float = 0.004, no_anim: bool = False) -> None:
+    if no_anim or not sys.stdout.isatty():
+        _tw_line(text)
+        return
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(delay)
+    print()
+
+
+def _scramble_reveal(label: str, final_value: str, no_anim: bool = False) -> None:
+    if no_anim or not sys.stdout.isatty() or not final_value:
+        _tw_line(f"{label}{final_value}")
+        return
+    charset = "0123456789ABCDEF@#$%&*+?"
+    shown = list(final_value)
+    cycles = min(8, max(4, len(final_value) // 3))
+    for step in range(cycles):
+        temp = []
+        for idx, ch in enumerate(shown):
+            if ch in (" ", ":", "|", "-", "/"):
+                temp.append(ch)
+            elif idx < int((step / cycles) * len(shown)):
+                temp.append(ch)
+            else:
+                temp.append(random.choice(charset))
+        sys.stdout.write(f"\r{label}{CYAN}{''.join(temp)}{RESET}")
+        sys.stdout.flush()
+        time.sleep(0.02)
+    sys.stdout.write(f"\r{label}{BOLD}{final_value}{RESET}\n")
+    sys.stdout.flush()
+
+
+def _spinner(label: str, duration: float = 0.35, no_anim: bool = False) -> None:
+    if no_anim or not sys.stdout.isatty():
+        _tw_line(f"[*] {label}")
+        return
+    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    steps = max(1, int(duration / 0.05))
+    for i in range(steps):
+        f = frames[i % len(frames)]
+        sys.stdout.write(f"\r{GREEN}{f}{RESET} {CYAN}{label}...{RESET}")
+        sys.stdout.flush()
+        time.sleep(0.05)
+    sys.stdout.write(f"\r{GREEN}[✓]{RESET} {label}          \n")
+    sys.stdout.flush()
+
+
+def _scan_bar(no_anim: bool = False) -> None:
+    if no_anim or not sys.stdout.isatty():
+        return
+    width = 26
+    for i in range(width + 1):
+        pct = int((i / width) * 100)
+        bar = "█" * i + "░" * (width - i)
+        sys.stdout.write(f"\r  {GREEN}[{bar}]{RESET} {CYAN}{pct:3d}%{RESET}")
+        sys.stdout.flush()
+        time.sleep(0.01)
+    _tw_line("\n")
+
+
+def _print_json(data: dict) -> None:
+    _tw_line(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _save_export(data: dict, export_path: str) -> None:
+    if not export_path:
+        return
+    target = Path(export_path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.suffix.lower() == ".json":
+        target.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    else:
+        target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _tw_line(f"  {GREEN}[✓] Exported report to:{RESET} {target}\n")
+
+
+def _render_menu(no_anim: bool = False) -> None:
+    menu_lines = [
+        f"{BOLD}{CYAN}Select an operation:{RESET}",
+        f"  {GREEN}[1]{RESET} Scan Sample & Detect Vulnerabilities",
+        f"  {GREEN}[2]{RESET} Caesar / ROT Lab (0..25)",
+        f"  {GREEN}[3]{RESET} Atbash / ROT13 / Morse Lab",
+        f"  {GREEN}[4]{RESET} Vigenere Key-Hint & Dictionary Lab",
+        f"  {GREEN}[5]{RESET} Multi-Layer Decoder (Base64 / Hex / URL)",
+        f"  {GREEN}[6]{RESET} Single-Byte XOR Lab (0..255)",
+        f"  {GREEN}[7]{RESET} Repeating-Key XOR Lab (Timed / Bounded)",
+        f"  {GREEN}[8]{RESET} Weak Hash Lab (MD5 / SHA1 / SHA256)",
+        f"  {GREEN}[9]{RESET} Tamper & Wrong-Key Test",
+        f"  {GREEN}[10]{RESET} Wrap / Unwrap AEGIS-X-v1",
+        f"  {GREEN}[11]{RESET} Compare Encoding vs AEGIS-X-v1",
+        f"  {RED}[0]{RESET} Exit",
+    ]
+    if no_anim or not sys.stdout.isatty():
+        for line in menu_lines:
+            typewriter_print(line, delay=0.008, enabled=True)
+        return
+    _typewriter(menu_lines[0], delay=0.01, no_anim=no_anim)
+    for line in menu_lines[1:]:
+        typewriter_print(line, delay=0.008, enabled=True)
+
+
+def _render_scan_ui(report: dict, no_anim: bool = False) -> None:
+    p = report.get("pattern", {})
+    vulns = report.get("vulnerabilities", [])
+    key_audit = report.get("key_audit")
+
+    _tw_line(f"{BOLD}{MAGENTA}┌────────────────── CRYPTO AUDIT REPORT ──────────────────┐{RESET}")
+    _scramble_reveal(f"{MAGENTA}│{RESET} {CYAN}Detected Type :{RESET} ", str(p.get("detected_type", "-")), no_anim=no_anim)
+    _tw_line(f"{MAGENTA}│{RESET} {CYAN}Entropy       :{RESET} {YELLOW}{p.get('entropy', '-')} bits/char{RESET}  "
+        f"{DIM}|{RESET}  {CYAN}Len:{RESET} {p.get('length', 0)}  "
+        f"{DIM}|{RESET}  {CYAN}Unique:{RESET} {p.get('unique_char_ratio', 0)}")
+    if key_audit:
+        rating = key_audit.get("rating", "-")
+        col = GREEN if rating == "Strong" else (YELLOW if rating == "Moderate" else RED)
+        _tw_line(f"{MAGENTA}│{RESET} {CYAN}Key Strength  :{RESET} {col}{BOLD}{rating}{RESET} ({key_audit.get('score', 0)}/100)")
+    _tw_line(f"{BOLD}{MAGENTA}└─────────────────────────────────────────────────────────┘{RESET}")
+
+    if not vulns:
+        _tw_line(f"\n  {GREEN}{BOLD}[✓] Target looks solid: no obvious cryptographic weaknesses found.{RESET}\n")
+        return
+
+    _tw_line(f"\n  {RED}{BOLD}[!] Detected Weaknesses ({len(vulns)}):{RESET}")
+    for v in vulns:
+        sev = v.get("severity", "Medium")
+        tag = f"{RED}[HIGH]{RESET}" if sev == "High" else f"{YELLOW}[MED ]{RESET}"
+        _tw_line(f"   {tag} {BOLD}{v.get('title')}{RESET} {DIM}({v.get('id')}){RESET}")
+        _tw_line(f"         {DIM}{v.get('detail')}{RESET}")
+        _tw_line(f"         {GREEN}Remediation:{RESET} {v.get('remediation')}")
+    print()
+
+
+def _run_scan(sample: str, passphrase: str = "", as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Initializing entropy & pattern analyzer", no_anim=no_anim)
+        _scan_bar(no_anim=no_anim)
+    report = detect_vulnerabilities(sample, passphrase=passphrase)
+    if as_json:
+        _print_json(report)
+    else:
+        _render_scan_ui(report, no_anim=no_anim)
+    _save_export(report, export)
+
+
+def _run_caesar(ciphertext: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Sweeping Caesar/ROT keyspace (0..25)", duration=0.45, no_anim=no_anim)
+        _scan_bar(no_anim=no_anim)
+    data = controlled_caesar_lab(ciphertext)
+    if as_json:
+        _print_json(data)
+    else:
+        _tw_line(f"{BOLD}{YELLOW}[+] {data.get('status')}{RESET}\n")
+        for item in data.get("results", []):
+            _scramble_reveal(f"  {CYAN}Shift {item['shift']:02d}{RESET} ──▶ ", f"{GREEN}{item['candidate']}{RESET}", no_anim=no_anim)
+        print()
+    _save_export(data, export)
+
+
+def _run_atbash(text: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Applying Atbash mirror substitution", no_anim=no_anim)
+    data = atbash_lab(text)
+    if as_json:
+        _print_json(data)
+    else:
+        _scramble_reveal(f"\n  {GREEN}[+] Atbash Output:{RESET} ", data["output"], no_anim=no_anim)
+        print()
+    _save_export(data, export)
+
+
+def _run_rot13(text: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Applying ROT13 substitution", no_anim=no_anim)
+    data = rot13_lab(text)
+    if as_json:
+        _print_json(data)
+    else:
+        _scramble_reveal(f"\n  {GREEN}[+] ROT13 Output:{RESET} ", data["output"], no_anim=no_anim)
+        print()
+    _save_export(data, export)
+
+
+def _run_morse(sample: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Processing Morse signal/text", no_anim=no_anim)
+    data = morse_lab(sample)
+    if as_json:
+        _print_json(data)
+    else:
+        _scramble_reveal(f"\n  {GREEN}[+] Morse ({data['direction']}):{RESET} ", data["output"], no_anim=no_anim)
+        print()
+    _save_export(data, export)
+
+
+def _run_vigenere(ciphertext: str, max_attempts: int, timeout: float, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Running Vigenere key-hint & dictionary lab", duration=0.4, no_anim=no_anim)
+    data = vigenere_lab(ciphertext, max_attempts=max_attempts, timeout=timeout)
+    if as_json:
+        _print_json(data)
+    else:
+        hints = ", ".join(f"len={h['key_len']} ({h['coincidence_ratio']})" for h in data.get("key_length_hints", []))
+        _tw_line(f"\n  {CYAN}Key Length Hints:{RESET} {hints or 'n/a'}")
+        _tw_line(f"  {CYAN}Attempts:{RESET} {data['attempts']} | {CYAN}Elapsed:{RESET} {data['elapsed_sec']}s\n")
+        for c in data.get("top_candidates", []):
+            _tw_line(f"  Key={YELLOW}{c['key']:<8}{RESET} Score={c['score']:<6} ─▶ {GREEN}{c['candidate']}{RESET}")
+        print()
+    _save_export(data, export)
+
+
+def _run_layers(sample: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Peeling multi-layer encodings (Base64/Hex/URL)", no_anim=no_anim)
+    data = decode_layers_lab(sample)
+    if as_json:
+        _print_json(data)
+    else:
+        _tw_line(f"\n  {CYAN}Layers Peeled:{RESET} {data['layers_peeled']}")
+        for s in data.get("steps", []):
+            _tw_line(f"    Layer {s['layer']} [{YELLOW}{s['codec']}{RESET}] ─▶ {s['preview']}")
+        _scramble_reveal(f"  {GREEN}{BOLD}Final Output :{RESET} ", data["final_output"], no_anim=no_anim)
+        print()
+    _save_export(data, export)
+
+
+def _run_xor_sb(sample: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Brute-forcing Single-Byte XOR keyspace (0..255)", duration=0.45, no_anim=no_anim)
+        _scan_bar(no_anim=no_anim)
+    data = xor_single_byte_lab(sample)
+    if as_json:
+        _print_json(data)
+    else:
+        _tw_line(f"  {CYAN}Mode:{RESET} {data['input_mode']} | {CYAN}Keys Tested:{RESET} {data['keyspace_tested']}\n")
+        for c in data.get("top_candidates", []):
+            _tw_line(f"  Key={YELLOW}{c['key_hex']}{RESET} ({c['key_dec']:3d}) Score={c['score']:<6} ─▶ {GREEN}{c['candidate']}{RESET}")
+        print()
+    _save_export(data, export)
+
+
+def _run_xor_rep(sample: str, max_key_len: int, max_attempts: int, timeout: float, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Running bounded Repeating-Key XOR lab", duration=0.45, no_anim=no_anim)
+    data = xor_repeating_lab(sample, max_key_len=max_key_len, max_attempts=max_attempts, timeout=timeout)
+    if as_json:
+        _print_json(data)
+    else:
+        _tw_line(f"\n  {CYAN}Attempts:{RESET} {data['attempts']} | {CYAN}Rate:{RESET} {data['attempts_per_sec']}/s | "
+            f"{CYAN}Time:{RESET} {data['elapsed_sec']}s | {CYAN}Status:{RESET} {YELLOW}{data['stopped_reason']}{RESET}\n")
+        for c in data.get("top_candidates", []):
+            _tw_line(f"  Key={YELLOW}{c['key']:<6}{RESET} Score={c['score']:<6} ─▶ {GREEN}{c['candidate']}{RESET}")
+        print()
+    _save_export(data, export)
+
+
+def _run_hash_lab(target_hash: str, algo: str, max_attempts: int, timeout: float, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner(f"Running bounded {algo.upper()} lab", duration=0.45, no_anim=no_anim)
+    data = weak_hash_lab(target_hash, algo=algo, max_attempts=max_attempts, timeout=timeout)
+    if as_json:
+        _print_json(data)
+    else:
+        status = f"{GREEN}CRACKED -> {data['match']}{RESET}" if data["cracked"] else f"{YELLOW}{data['stopped_reason']}{RESET}"
+        _tw_line(f"\n  {CYAN}Algo:{RESET} {data['algorithm'].upper()} | {CYAN}Status:{RESET} {status}\n"
+            f"  {CYAN}Attempts:{RESET} {data['attempts']} | {CYAN}Rate:{RESET} {data['attempts_per_sec']}/s | "
+            f"{CYAN}Elapsed:{RESET} {data['elapsed_sec']}s\n")
+    _save_export(data, export)
+
+
+def _run_tamper(text: str, passphrase: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Sealing AEGIS-X-v1 envelope & simulating byte tamper", duration=0.45, no_anim=no_anim)
+        _scan_bar(no_anim=no_anim)
+    data = tamper_resistance_demo(text, passphrase)
+    if as_json:
+        _print_json(data)
+    else:
+        t_badge = f"{GREEN}[BLOCKED]{RESET}" if data["tampered_envelope_blocked"] else f"{RED}[BYPASSED]{RESET}"
+        w_badge = f"{GREEN}[BLOCKED]{RESET}" if data["wrong_passphrase_blocked"] else f"{RED}[BYPASSED]{RESET}"
+        _tw_line(f"  {CYAN}Envelope Preview :{RESET} {DIM}{data['sealed_sample']}{RESET}")
+        _tw_line(f"  {CYAN}Tamper Defense   :{RESET} {t_badge} {data['tamper_message']}")
+        _tw_line(f"  {CYAN}Wrong Key Defense:{RESET} {w_badge} {data['wrong_passphrase_message']}\n")
+    _save_export(data, export)
+
+
+def _run_wrap(text: str, passphrase: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Deriving PBKDF2-HMAC-SHA256 & sealing payload", no_anim=no_anim)
+    env = wrap_payload(text, passphrase)
+    out = {"envelope": env}
+    if as_json:
+        _print_json(out)
+    else:
+        _tw_line(f"\n  {GREEN}{BOLD}[+] AEGIS-X-v1 Envelope:{RESET}\n  {env}\n")
+    _save_export(out, export)
+
+
+def _run_unwrap(envelope: str, passphrase: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Verifying HMAC integrity & decrypting envelope", no_anim=no_anim)
+    pt = unwrap_payload(envelope, passphrase)
+    out = {"plaintext": pt}
+    if as_json:
+        _print_json(out)
+    else:
+        _scramble_reveal(f"\n  {GREEN}{BOLD}[+] Decrypted Plaintext:{RESET}\n  ", pt, no_anim=no_anim)
+        print()
+    _save_export(out, export)
+
+
+def _run_compare(text: str, passphrase: str, as_json: bool = False, no_anim: bool = False, export: str = "") -> None:
+    if not as_json:
+        _spinner("Comparing Base64 encoding vs AEGIS-X-v1 envelope", no_anim=no_anim)
+    data = compare_protection_lab(text, passphrase)
+    if as_json:
+        _print_json(data)
+    else:
+        enc = data["encoding_only"]
+        env = data["authenticated_envelope"]
+        _tw_line(f"\n  {YELLOW}[Encoding Only]{RESET} {enc['format']} | Entropy={enc['entropy']} | Len={enc['length']} | HMAC={enc['integrity_protected']}")
+        _tw_line(f"  {GREEN}[AEGIS-X-v1   ]{RESET} Entropy={env['entropy']} | Len={env['length']} | HMAC={env['integrity_protected']}\n")
+    _save_export(data, export)
+
+
+def _interactive_shell(no_anim: bool = False) -> None:
+    _tw_line(CYBER_BANNER)
+    _spinner("Loading AEGIS-X-v1 modules", duration=0.35, no_anim=no_anim)
+    _scan_bar(no_anim=no_anim)
+
+    if not sys.stdin.isatty():
+        _tw_line(f"{YELLOW}[!] Standard input is not an interactive TTY. Use subcommands like: aegis scan <sample>{RESET}")
+        return
+
+    eof_streak = 0
+    while True:
+        _render_menu(no_anim=no_anim)
+        try:
+            choice = input(f"\n{GREEN}{BOLD}aegis-rt>{RESET} ").strip()
+            eof_streak = 0
+        except KeyboardInterrupt:
+            _tw_line(f"\n{DIM}Exiting Aegis-RT...{RESET}")
+            break
+        except EOFError:
+            eof_streak += 1
+            if eof_streak >= 3:
+                _tw_line(f"\n{YELLOW}[!] Input stream closed (EOF). Exiting interactive shell.{RESET}")
+                break
+            time.sleep(0.05)
+            continue
+
+        try:
+            if choice == "1":
+                s = input(f"{CYAN}Sample:{RESET} ").strip()
+                pw = input(f"{CYAN}Optional passphrase:{RESET} ").strip()
+                _run_scan(s, pw, no_anim=no_anim)
+            elif choice == "2":
+                ct = input(f"{CYAN}Ciphertext:{RESET} ").strip()
+                _run_caesar(ct or "khoor zruog", no_anim=no_anim)
+            elif choice == "3":
+                sub_mode = input(f"{CYAN}Mode (atbash/rot13/morse) [atbash]:{RESET} ").strip().lower() or "atbash"
+                t = input(f"{CYAN}Input:{RESET} ").strip()
+                if sub_mode == "rot13":
+                    _run_rot13(t or "uryyb jbeyq", no_anim=no_anim)
+                elif sub_mode == "morse":
+                    _run_morse(t or ".... . .-.. .-.. ---", no_anim=no_anim)
+                else:
+                    _run_atbash(t or "svool dliow", no_anim=no_anim)
+            elif choice == "4":
+                ct = input(f"{CYAN}Vigenere ciphertext:{RESET} ").strip()
+                _run_vigenere(ct, max_attempts=5000, timeout=5.0, no_anim=no_anim)
+            elif choice == "5":
+                s = input(f"{CYAN}Encoded sample:{RESET} ").strip()
+                _run_layers(s, no_anim=no_anim)
+            elif choice == "6":
+                s = input(f"{CYAN}Hex or text sample:{RESET} ").strip()
+                _run_xor_sb(s, no_anim=no_anim)
+            elif choice == "7":
+                s = input(f"{CYAN}Hex or text sample:{RESET} ").strip()
+                _run_xor_rep(s, max_key_len=3, max_attempts=80000, timeout=5.0, no_anim=no_anim)
+            elif choice == "8":
+                h = input(f"{CYAN}Target hash:{RESET} ").strip()
+                al = input(f"{CYAN}Algo (md5/sha1/sha256) [md5]:{RESET} ").strip() or "md5"
+                _run_hash_lab(h, al, max_attempts=200000, timeout=8.0, no_anim=no_anim)
+            elif choice == "9":
+                txt = input(f"{CYAN}Payload text:{RESET} ").strip()
+                pw = input(f"{CYAN}Passphrase:{RESET} ").strip()
+                _run_tamper(txt or "red-team-note", pw or "StrongPass!2026", no_anim=no_anim)
+            elif choice == "10":
+                mode = input(f"{CYAN}Mode (wrap/unwrap) [wrap]:{RESET} ").strip().lower() or "wrap"
+                payload = input(f"{CYAN}Text or Envelope:{RESET} ").strip()
+                pw = input(f"{CYAN}Passphrase:{RESET} ").strip()
+                if mode == "unwrap":
+                    _run_unwrap(payload, pw, no_anim=no_anim)
+                else:
+                    _run_wrap(payload, pw, no_anim=no_anim)
+            elif choice == "11":
+                txt = input(f"{CYAN}Plaintext:{RESET} ").strip() or "sample-secret"
+                pw = input(f"{CYAN}Passphrase:{RESET} ").strip() or "StrongPass!2026"
+                _run_compare(txt, pw, no_anim=no_anim)
+            elif choice == "0":
+                _tw_line(f"{DIM}Session closed.{RESET}")
+                break
+            else:
+                _tw_line(f"{YELLOW}[!] Invalid option.{RESET}\n")
+        except ValueError as exc:
+            _tw_line(f"\n{RED}{BOLD}[!] Error:{RESET} {exc}\n")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="aegis",
+        description="Aegis-RT Interactive & Command-Line Crypto Analyzer"
+    )
+    parser.add_argument("--no-anim", action="store_true", help="Disable terminal animations")
+    parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    parser.add_argument("--export", default="", help="Save output report to a file (.json or .txt)")
+    sub = parser.add_subparsers(dest="command", required=False)
+
+    p_scan = sub.add_parser("scan", help="Analyze pattern and detect vulnerabilities")
+    p_scan.add_argument("sample")
+    p_scan.add_argument("-p", "--passphrase", default="")
+    p_scan.set_defaults(func=lambda a: _run_scan(a.sample, a.passphrase, a.json, a.no_anim, a.export))
+
+    p_pat = sub.add_parser("pattern", help="Identify structure and entropy")
+    p_pat.add_argument("sample")
+    p_pat.set_defaults(func=lambda a: _print_json(analyze_pattern(a.sample)))
+
+    p_key = sub.add_parser("key", help="Audit passphrase strength")
+    p_key.add_argument("passphrase")
+    p_key.set_defaults(func=lambda a: _print_json(audit_key_strength(a.passphrase)))
+
+    p_caesar = sub.add_parser("caesar-lab", help="Sweep Caesar shifts 0..25")
+    p_caesar.add_argument("ciphertext")
+    p_caesar.set_defaults(func=lambda a: _run_caesar(a.ciphertext, a.json, a.no_anim, a.export))
+
+    p_atbash = sub.add_parser("atbash-lab", help="Apply Atbash mirror substitution")
+    p_atbash.add_argument("text")
+    p_atbash.set_defaults(func=lambda a: _run_atbash(a.text, a.json, a.no_anim, a.export))
+
+    p_rot13 = sub.add_parser("rot13-lab", help="Apply ROT13 substitution")
+    p_rot13.add_argument("text")
+    p_rot13.set_defaults(func=lambda a: _run_rot13(a.text, a.json, a.no_anim, a.export))
+
+    p_morse = sub.add_parser("morse-lab", help="Encode or decode Morse code")
+    p_morse.add_argument("sample")
+    p_morse.set_defaults(func=lambda a: _run_morse(a.sample, a.json, a.no_anim, a.export))
+
+    p_vig = sub.add_parser("vigenere-lab", help="Vigenere key-length hints + dictionary lab")
+    p_vig.add_argument("ciphertext")
+    p_vig.add_argument("--max-attempts", type=int, default=5000)
+    p_vig.add_argument("--timeout", type=float, default=5.0)
+    p_vig.set_defaults(func=lambda a: _run_vigenere(a.ciphertext, a.max_attempts, a.timeout, a.json, a.no_anim, a.export))
+
+    p_layers = sub.add_parser("layers-lab", help="Peel multi-layer encodings (Base64/Hex/URL)")
+    p_layers.add_argument("sample")
+    p_layers.set_defaults(func=lambda a: _run_layers(a.sample, a.json, a.no_anim, a.export))
+
+    p_xorsb = sub.add_parser("xor-sb", help="Sweep Single-Byte XOR keyspace 0..255")
+    p_xorsb.add_argument("sample")
+    p_xorsb.set_defaults(func=lambda a: _run_xor_sb(a.sample, a.json, a.no_anim, a.export))
+
+    p_xorrep = sub.add_parser("xor-rep", help="Bounded Repeating-Key XOR lab")
+    p_xorrep.add_argument("sample")
+    p_xorrep.add_argument("--max-key-len", type=int, default=3)
+    p_xorrep.add_argument("--max-attempts", type=int, default=80000)
+    p_xorrep.add_argument("--timeout", type=float, default=5.0)
+    p_xorrep.set_defaults(func=lambda a: _run_xor_rep(a.sample, a.max_key_len, a.max_attempts, a.timeout, a.json, a.no_anim, a.export))
+
+    p_hash = sub.add_parser("hash-lab", help="Bounded weak hash lab (md5/sha1/sha256)")
+    p_hash.add_argument("target_hash")
+    p_hash.add_argument("--algo", default="md5")
+    p_hash.add_argument("--max-attempts", type=int, default=200000)
+    p_hash.add_argument("--timeout", type=float, default=8.0)
+    p_hash.set_defaults(func=lambda a: _run_hash_lab(a.target_hash, a.algo, a.max_attempts, a.timeout, a.json, a.no_anim, a.export))
+
+    p_tamper = sub.add_parser("tamper-test", help="Test HMAC integrity and wrong-key check")
+    p_tamper.add_argument("text")
+    p_tamper.add_argument("passphrase")
+    p_tamper.set_defaults(func=lambda a: _run_tamper(a.text, a.passphrase, a.json, a.no_anim, a.export))
+
+    p_wrap = sub.add_parser("wrap", help="Seal text into an AEGIS-X-v1 envelope")
+    p_wrap.add_argument("text")
+    p_wrap.add_argument("passphrase")
+    p_wrap.set_defaults(func=lambda a: _run_wrap(a.text, a.passphrase, a.json, a.no_anim, a.export))
+
+    p_unwrap = sub.add_parser("unwrap", help="Verify and open an AEGIS-X-v1 envelope")
+    p_unwrap.add_argument("envelope")
+    p_unwrap.add_argument("passphrase")
+    p_unwrap.set_defaults(func=lambda a: _run_unwrap(a.envelope, a.passphrase, a.json, a.no_anim, a.export))
+
+    p_cmp = sub.add_parser("compare-lab", help="Compare Base64 encoding vs AEGIS-X-v1 envelope")
+    p_cmp.add_argument("text")
+    p_cmp.add_argument("passphrase")
+    p_cmp.set_defaults(func=lambda a: _run_compare(a.text, a.passphrase, a.json, a.no_anim, a.export))
+
+    p_web = sub.add_parser("web", help="Start Web UI connected to vault.py")
+    p_web.add_argument("--host", default="0.0.0.0")
+    p_web.add_argument("--port", type=int, default=8080)
+    p_web.set_defaults(func=lambda a: serve_web(host=a.host, port=a.port))
+
+    return parser
+
+
+def typewriter_print(text, delay=0.01, enabled=True):
+    if not enabled or not text:
+        _tw_line(text)
+        return
+    s = str(text)
+    if len(s) > 600:
+        _tw_line(s)
+        return
+    for ch in s:
+        print(ch, end="", flush=True)
+        time.sleep(delay)
+    print()
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    if not args.command:
+        _interactive_shell(no_anim=args.no_anim)
+        return 0
+    try:
+        args.func(args)
+        return 0
+    except ValueError as exc:
+        print(f"\n{RED}{BOLD}[!] Error:{RESET} {exc}\n", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
